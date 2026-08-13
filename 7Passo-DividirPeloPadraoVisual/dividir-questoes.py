@@ -23,147 +23,206 @@ OBS7: rode esse código para cada imagem que você precisa cortar. Atualize as l
 OBS8: execute o código, e abra as imagens para conferir se as questões foram divididas corretamente. Se não, ajuste os valores de corte e execute novamente.
 """
 
-from PIL import Image
-import os
+"""
+Propósito: Dividir as questões por padrão visual (faixa cinza vertical/horizontal no canto direito).
+Autor: Alexandre Nassar de Peder
+Atualizado para buscar faixa cinza RGB (73,74) de 28px de altura (margem ±3px)
+e realizar o corte 8px acima do início do padrão.
+"""
 
-# Desativa o limite de tamanho de imagem do Pillow para arquivos gigantes
-Image.MAX_IMAGE_PIXELS = None 
+"""
+Propósito: Dividir as questões por padrão visual (faixa cinza).
+Atualizado com suporte a imagens grandes, tolerância ajustada e logs de diagnóstico.
+"""
+"""
+Propósito: Dividir as questões por padrão visual (faixa cinza).
+Ajuste: Adicionada varredura horizontal para ignorar a borda preta e localizar
+a faixa cinza mesmo que ela esteja deslocada para o interior da imagem.
+"""
+
+"""
+Propósito: Dividir as questões por padrão visual (faixa cinza).
+Versão otimizada para imagens da pasta 'inteiras' com margens brancas largas.
+"""
+
+import os
+from PIL import Image
+
+# Desativa limite de pixels para imagens grandes
+Image.MAX_IMAGE_PIXELS = None
+
 
 def cor_corresponde(pixel, cor_alvo, tolerancia=25):
-    """
-    Verifica se a cor do pixel está dentro da tolerância do RGB alvo.
-    """
-    if len(pixel) == 4:  # RGBA
-        r, g, b, a = pixel
-        if a < 128:  # Ignora pixels transparentes
-            return False
-    else:  # RGB
+    """Verifica se um pixel RGB ou RGBA corresponde à cor alvo."""
+    if len(pixel) == 4:
+        r, g, b, _ = pixel
+    else:
         r, g, b = pixel[:3]
-        
-    return (abs(r - cor_alvo[0]) <= tolerancia and 
-            abs(g - cor_alvo[1]) <= tolerancia and 
-            abs(b - cor_alvo[2]) <= tolerancia)
 
-def encontrar_faixa_cinza(imagem, cor_alvo, tolerancia=25, altura_min=44, altura_max=56, offset_corte=8, margem_direita=15):
-    """
-    Busca faixas cinzas varrendo as colunas no canto direito da imagem,
-    sendo tolerante a pequenos ruídos/pixels fora do padrão.
+    return (
+        abs(r - cor_alvo[0]) <= tolerancia
+        and abs(g - cor_alvo[1]) <= tolerancia
+        and abs(b - cor_alvo[2]) <= tolerancia
+    )
+
+
+def encontrar_coluna_faixa(
+    imagem, cor_alvo, tolerancia=25, profundidade_busca=200
+):
+    """Varre da borda direita para dentro em toda a extensão da imagem para
+
+    encontrar a coluna X onde a faixa cinza se localiza.
     """
     largura, altura = imagem.size
     pixels = imagem.load()
-    
-    posicoes_corte = []
-    
-    # Define quais colunas testar na direita (da borda para dentro)
-    colunas_x = [largura - 1 - i for i in range(margem_direita) if (largura - 1 - i) >= 0]
-    
-    y = 0
-    while y < altura - altura_min:
-        faixa_encontrada = False
-        altura_faixa_detectada = 0
 
-        for x in colunas_x:
-            contagem_pixels = 0
-            
-            # Percorre a altura máxima da faixa para contar pixels correspondentes
-            for dy in range(altura_max):
-                if y + dy >= altura:
-                    break
-                
-                pixel = pixels[x, y + dy]
-                if cor_corresponde(pixel, cor_alvo, tolerancia):
-                    contagem_pixels += 1
-                else:
-                    # Permite até 3 pixels "sujos" na faixa antes de quebrar a contagem
-                    if dy > 5 and contagem_pixels < dy - 3:
-                        break
-            
-            # Se encontrou uma quantidade válida de pixels da cor dentro do intervalo esperado
-            if altura_min <= contagem_pixels <= altura_max:
-                faixa_encontrada = True
-                altura_faixa_detectada = contagem_pixels
+    contagem_x = {}
+
+    print(
+        f"[Info] Mapeando colunas nos últimos {profundidade_busca}px da direita ao longo de toda a imagem..."
+    )
+
+    # Amostragem vertical ao longo de toda a altura (passos de 20px)
+    for x in range(largura - 1, max(0, largura - profundidade_busca), -2):
+        contagem_x[x] = 0
+        for y in range(0, altura, 20):
+            if cor_corresponde(pixels[x, y], cor_alvo, tolerancia):
+                contagem_x[x] += 1
+
+    melhor_x = max(contagem_x, key=contagem_x.get)
+
+    if contagem_x[melhor_x] > 0:
+        distancia = largura - 1 - melhor_x
+        print(
+            f"[Sucesso] Faixa cinza identificada na coluna X = {melhor_x} (distância da borda direita: {distancia}px)"
+        )
+        return melhor_x
+
+    return None
+
+
+def encontrar_faixa_cinza(
+    imagem,
+    coluna_x,
+    cor_alvo=(73, 73, 74),
+    tolerancia=25,
+    altura_base=28,
+    margem_erro=3,
+    deslocamento_corte=8,
+):
+    """Percorre a imagem verticalmente na coluna X e recorta 8px acima da faixa."""
+    largura, altura = imagem.size
+    pixels = imagem.load()
+
+    posicoes_corte = []
+    altura_minima = altura_base - margem_erro  # 25px
+    altura_maxima = altura_base + margem_erro  # 31px
+
+    y = 0
+    while y < altura - altura_minima:
+        altura_encontrada = 0
+
+        for dy in range(altura_maxima):
+            if (y + dy) >= altura:
                 break
-        
-        if faixa_encontrada:
-            posicao_corte = y - offset_corte
-            if posicao_corte < 0:
-                posicao_corte = 0
-                
-            posicoes_corte.append((posicao_corte, y, altura_faixa_detectada))
-            print(f"-> Faixa encontrada em y={y} (altura de ~{altura_faixa_detectada}px), cortando em y={posicao_corte}")
-            
-            # Avança após o final da faixa encontrada
-            y += altura_faixa_detectada
+
+            pixel_alvo = pixels[coluna_x, y + dy]
+
+            if cor_corresponde(pixel_alvo, cor_alvo, tolerancia):
+                altura_encontrada += 1
+            else:
+                break
+
+        # Valida a faixa encontrada na faixa de 25px a 31px
+        if altura_minima <= altura_encontrada <= altura_maxima:
+            posicao_corte = max(0, y - deslocamento_corte)
+            posicoes_corte.append((posicao_corte, altura_encontrada))
+            print(
+                f"Faixa cinza de {altura_encontrada}px detectada em y={y}. Cortando em y={posicao_corte}"
+            )
+            y += altura_encontrada
         else:
             y += 1
-    
+
     return posicoes_corte
 
-def dividir_imagem_por_faixas(caminho_imagem, pasta_saida, cor_alvo):
-    """
-    Divide a imagem verticalmente mantendo o padrão no topo de cada parte.
-    """
+
+def dividir_imagem_por_faixas(caminho_imagem, pasta_saida, cor_alvo=(73, 73, 74)):
+    """Divide a imagem verticalmente salvando na pasta de saída."""
+    os.makedirs(pasta_saida, exist_ok=True)
+
     if not os.path.exists(caminho_imagem):
-        print(f"ERRO: O arquivo '{caminho_imagem}' não foi encontrado na pasta!")
+        print(f"Erro: O arquivo '{caminho_imagem}' não foi encontrado!")
         return
 
     imagem = Image.open(caminho_imagem)
     largura, altura = imagem.size
-    
+
     print(f"Imagem carregada: {largura}x{altura} pixels")
-    
-    # Executa a busca com tolerância ampliada (25) e varredura nos últimos 15px da direita
-    dados_corte = encontrar_faixa_cinza(
-        imagem, 
-        cor_alvo, 
-        tolerancia=25,       # Aumentada para aceitar pequenas variações de tom
-        altura_min=44,       # Margem levemente expandida (50 - 6px)
-        altura_max=56,       # Margem levemente expandida (50 + 6px)
-        offset_corte=8, 
-        margem_direita=15    # Procura nos últimos 15 pixels da direita
+
+    # 1. Busca a coluna X correta
+    coluna_x = encontrar_coluna_faixa(
+        imagem, cor_alvo, tolerancia=25, profundidade_busca=200
     )
-    
-    if not dados_corte:
-        print("\nNenhuma faixa cinza foi encontrada!")
-        print("Dica: Verifique no GIMP o RGB exato da faixa nessa imagem específica.")
+
+    if coluna_x is None:
+        print(
+            "\n[Aviso] Nenhuma faixa com a cor RGB informada foi encontrada nos últimos 200px da direita."
+        )
+        print(
+            "Verifique se o tom de cinza do padrão nesta imagem inteira difere de RGB(73, 73, 74)."
+        )
         return
-    
-    print(f"\nEncontradas {len(dados_corte)} faixas cinzas para corte.")
-    os.makedirs(pasta_saida, exist_ok=True)
-    
+
+    # 2. Localiza as faixas verticalmente
+    resultados_faixas = encontrar_faixa_cinza(
+        imagem, coluna_x=coluna_x, cor_alvo=cor_alvo, tolerancia=25
+    )
+
+    if not resultados_faixas:
+        print(
+            "\n[Aviso] Coluna identificada, mas nenhuma faixa atendeu ao critério de altura (28px ± 3px)."
+        )
+        return
+
+    print(f"\nEncontradas {len(resultados_faixas)} faixas cinzas para corte.")
+
+    # 3. Processa e salva as partes recortadas
     posicao_anterior = 0
-    
-    for i, (posicao_corte, y_faixa_inicio, altura_faixa) in enumerate(dados_corte):
+
+    for i, (posicao_corte, altura_faixa) in enumerate(resultados_faixas):
         if posicao_corte <= posicao_anterior:
             continue
-            
+
         area_corte = (0, posicao_anterior, largura, posicao_corte)
         secao = imagem.crop(area_corte)
-        
+
         nome_arquivo = f"parte_{i+1:03d}.png"
         caminho_completo = os.path.join(pasta_saida, nome_arquivo)
         secao.save(caminho_completo)
         print(f"Salvo: {caminho_completo} ({secao.width}x{secao.height}px)")
-        
-        posicao_anterior = posicao_corte
 
-    # Salva o bloco final após o último corte
+        posicao_anterior = posicao_corte + 8 + altura_faixa
+
+    # Bloco final da imagem
     if posicao_anterior < altura:
         area_corte = (0, posicao_anterior, largura, altura)
         secao = imagem.crop(area_corte)
-        
-        nome_arquivo = f"parte_{len(dados_corte)+1:03d}.png"
+
+        nome_arquivo = f"parte_{len(resultados_faixas)+1:03d}.png"
         caminho_completo = os.path.join(pasta_saida, nome_arquivo)
         secao.save(caminho_completo)
         print(f"Salvo: {caminho_completo} ({secao.width}x{secao.height}px)")
 
+
 if __name__ == "__main__":
-    # Garanta que o nome do arquivo corresponda exatamente ao arquivo da pasta
-    caminho_imagem = "colunas_concatenadas_verticalmente.png" 
-    pasta_saida = "colunas"
+    # Ajuste o nome da imagem e da pasta de saída conforme o OBS7
+    caminho_imagem = (
+        "inteiras_concatenadas_verticalmente.png"  # ex: "imagem_inteira.png"
+    )
+    pasta_saida = "inteiras_divididas"
 
     cor_do_padrao = (73, 73, 74)
-    print(f"Cor alvo configurada: RGB{cor_do_padrao}")
-    
+
     dividir_imagem_por_faixas(caminho_imagem, pasta_saida, cor_do_padrao)
-    print("Processo finalizado!")
+    print("\nProcesso finalizado!")
